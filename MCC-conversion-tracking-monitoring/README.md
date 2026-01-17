@@ -44,14 +44,20 @@ Megnézi, hogy az elmúlt X napban elérte-e a konverziók és/vagy a konverzió
 
 ##  Melyik konverziómérési típust válasszam?
 
-A script 4 lehetőséget kínál. Íme egy útmutató, hogy mikor melyiket érdemes használnod:
-
-| | Rövid konverziós ablak | Hosszú konverziós ablak |
-| :--- | :---: | :---: |
-| nem elsődleges(ek)      |  All Conversions  |   All Conversions  |
+A script 4 lehetőséget kínál.
+```
+|-------------------------|-------------------|--------------------|
+|                         | Rövid konv. ablak | Hosszú konv. ablak |
+|-------------------------|-------------------|--------------------|
+| A legtöbb kampányban    |                   |                    |
+| elsődleges(ek)          |    Conversions    |    Conversions     |
 | a konverzió(k)          |                   |   by conv. time    |
 |-------------------------|-------------------|--------------------|
-
+| Több kampányban         |                   |                    |
+| nem elsődleges(ek)      |  All Conversions  |  All Conversions   |
+| a konverzió(k)          |                   |   by conv. time    |
+|-------------------------|-------------------|--------------------|
+```
 ## 📊 Trend Riportok
 
 Ha be van kapcsolva a trend riport funkció, a script minden fiókhoz létrehoz egy külön fület a Google Sheet-ben (pl. `Trend - Ügyfél Neve`).
