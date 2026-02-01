@@ -45,6 +45,12 @@ const SHEET_URL = 'IDE_MÁSOLD_A_GOOGLE_SHEET_URL_CÍMÉT';
 // E-mail cím(ek) – mindig küldünk összefoglalót (OK esetben is)
 const EMAIL_RECIPIENTS = 'email@example.com';
 
+// Trend riport (30 napos napi bontás) – minimumok belövéséhez
+const ENABLE_TREND_REPORT = true;       // Kapcsoló: true = trend fülek + chartok készülnek
+const TREND_DAYS = 30;                  // Hány napot mutasson (tegnapig)
+const TREND_SHEET_PREFIX = 'Trend - ';  // Fül név prefix fiókonként
+const CLEAR_TREND_TABS_ON_RUN = true;   // true = futáskor a trend fülek ürítése/újraépítése
+
 // „Konverziómérés típusa” elfogadott értékek (fix stringek)
 const MEASUREMENT_TYPES = {
   CONV: 'Conversions',
@@ -52,12 +58,6 @@ const MEASUREMENT_TYPES = {
   CONV_TIME: 'Conversions by conv. time',
   ALL_TIME: 'All conversions by conv. time'
 };
-
-// Trend riport (30 napos napi bontás) – minimumok belövéséhez
-const ENABLE_TREND_REPORT = true;       // Kapcsoló: true = trend fülek + chartok készülnek
-const TREND_DAYS = 30;                  // Hány napot mutasson (tegnapig)
-const TREND_SHEET_PREFIX = 'Trend - ';  // Fül név prefix fiókonként
-const CLEAR_TREND_TABS_ON_RUN = true;   // true = futáskor a trend fülek ürítése/újraépítése
 
 // Logolási limit (mintanév-listákhoz)
 const LOG_SAMPLE_LIMIT = 5;
@@ -112,6 +112,54 @@ function main() {
 
   writeResultsHeader(resultsSheet);
 
+  // -- Highlighting és Count változók INICIALIZÁLÁSA --
+  const lastRow = settingsSheet.getLastRow();
+  const numCols = settingsSheet.getLastColumn();
+  const dataRowCount = lastRow - 1;
+
+  let bgColors = [];
+  if (dataRowCount > 0) {
+    // Reset range
+    settingsSheet.getRange(2, 1, dataRowCount, numCols).setBackground(null);
+    // Üres mátrix inicializálása
+    for (let r = 0; r < dataRowCount; r++) {
+      const rowArr = [];
+      for (let c = 0; c < numCols; c++) {
+        rowArr.push(null);
+      }
+      bgColors.push(rowArr);
+    }
+  }
+
+  let incompleteRowsCount = 0;
+
+  // -- ELŐ-VALIDÁCIÓ ÉS SZÍNEZÉS --
+  // Minden sort megvizsgálunk, függetlenül attól, hogy van-e érvényes ID-ja.
+  // Így a hiányzó ID-s sorok is bepirosodnak.
+  for (const r of configRows) {
+    const missingFields = [];
+    if (r.hasMissingId) missingFields.push('"Fiókazonosító"');
+    if (r.hasMissingMeasurementType) missingFields.push('"Konverziómérés típusa"');
+    if (r.hasMissingDays) missingFields.push('"Napok"');
+    if (r.hasMissingConvName && r.convName !== ACCOUNT_TOTAL_KEYWORD) missingFields.push('"Konverziós művelet"');
+    if (r.hasMissingMinConv) missingFields.push('"Elvárt konverziók"');
+    if (r.hasMissingMinVal) missingFields.push('"Elvárt konverziós érték"');
+
+    if (missingFields.length > 0) {
+      console.log(`[INFO] Hiányos beállítás miatt kihagyva: ${r.name || r.id || 'N/A'} - Hiányzik: ${missingFields.join(', ')}`);
+      incompleteRowsCount++;
+      r.skipped = true; // Jelezzük, hogy ezt később ne dolgozzuk fel
+
+      // Sorszínezés
+      if (r.dataIndex !== undefined && r.dataIndex < bgColors.length) {
+        const colCount = bgColors[r.dataIndex].length;
+        for (let c = 0; c < colCount; c++) {
+          bgColors[r.dataIndex][c] = '#FFEBEE';
+        }
+      }
+    }
+  }
+
   // Sorok fiókonként csoportosítva
   const grouped = groupByAccount(configRows);
 
@@ -119,6 +167,12 @@ function main() {
   const accountOrder = [];
   const seen = {};
   for (const row of configRows) {
+    // Csak ha van érvényes ID és nem lett kihagyva a validáció során (lásd lentebb, de a sorrend itt fontos:
+    // a validációt előbb kellene futtatni? Igen, forgassuk meg a logikát.)
+    // DE: a validációhoz kell a dataIndex, ami megvan.
+    // JOBB MEGOLDÁS: Előbb validálunk mindent, aztán gyűjtjük az ID-kat.
+    if (row.hasMissingId || row.skipped) continue;
+
     const id = normalizeId(row.id);
     if (!seen[id]) { seen[id] = true; accountOrder.push(id); }
   }
@@ -141,6 +195,7 @@ function main() {
 
   const deviationRows = []; // BELOW_* státuszok
   const errorRows = [];     // ERROR státuszok
+  // incompleteRowsCount már fentebb deklarálva
 
   // Fiókok feldolgozása
   for (const acc of accounts) {
@@ -175,44 +230,10 @@ function main() {
       for (const r of rows) {
         if (r.enabled === false) continue;
 
-        // 1) Üres Napok → input hiba
-        if (r.hasMissingDays) {
-          const note = 'Hiba: a "Napok" mező üres a Beállítások fülön (töltsd ki 1–90 közötti számmal).';
-          const status = 'ERROR';
+        // 1) Hiányzó kötelező mezők - MÁR ELLENŐRIZVE AZ ELŐ-VALIDÁCIÓBAN
+        if (r.skipped) continue;
 
-          writeResultRow(resultsSheet, {
-            timestamp: new Date(),
-            accountId: formatId(id),
-            customerName: r.name || acc.getName(),
-            measurementType: r.measurementType,
-            convName: r.convName,
-            days: '',
-            expConv: r.rawMinConv,
-            actConv: '',
-            expVal: r.rawMinVal,
-            actVal: '',
-            status: status,
-            note: note
-          });
-
-          errorRows.push({
-            Account: formatId(id),
-            Customer: r.name || acc.getName(),
-            MeasurementType: r.measurementType,
-            Conv: r.convName,
-            Days: '',
-            ExpConv: r.rawMinConv,
-            ActConv: '',
-            ExpVal: r.rawMinVal,
-            ActVal: '',
-            Status: status,
-            Note: note
-          });
-
-          continue;
-        }
-
-        // 2) Hibás Napok
+        // 2) Érvénytelen adatok (pl. negatív szám, vagy Napok > 90) - Ez marad ERROR
         if (r.hasInvalidDays) {
           const note = `Hiba: érvénytelen "Napok" érték a Beállítások fülön (1–${MAX_LOOKBACK_DAYS} közötti számot adj meg).`;
           const status = 'ERROR';
@@ -364,7 +385,6 @@ function main() {
         if (status === 'ERROR') errorRows.push(summaryRow);
         if (status !== 'OK' && status !== 'ERROR') deviationRows.push(summaryRow);
       }
-
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
       console.log(`Hiba ${formatId(id)}: ${msg}`);
@@ -437,6 +457,11 @@ function main() {
     }
   }
 
+  // -- Highlighting alkalmazása egy lépésben --
+  if (dataRowCount > 0 && bgColors.length > 0) {
+    settingsSheet.getRange(2, 1, dataRowCount, numCols).setBackgrounds(bgColors);
+  }
+
   // Trend riport + chartok (opcionális)
   let trendUpdated = false;
   if (ENABLE_TREND_REPORT) {
@@ -450,7 +475,7 @@ function main() {
   }
 
   // E-mail értesítő – mindig küldünk
-  writeStatusEmail(deviationRows, errorRows, (deviationRows.length === 0 && errorRows.length === 0), trendUpdated);
+  writeStatusEmail(deviationRows, errorRows, (deviationRows.length === 0 && errorRows.length === 0), trendUpdated, incompleteRowsCount);
 
   console.log('--- Kész ---');
 }
@@ -784,6 +809,16 @@ function getSheets() {
   if (!set) throw 'Hiányzik a Beállítások fül.';
   let res = ss.getSheetByName(RESULTS_SHEET_NAME);
   if (!res) res = ss.insertSheet(RESULTS_SHEET_NAME);
+
+  // Eredmények fül mindig a második pozícióban legyen (Beállítások után)
+  const settingsIndex = set.getIndex();
+  const resultsIndex = res.getIndex();
+  const targetIndex = settingsIndex + 1;
+  if (resultsIndex !== targetIndex) {
+    ss.setActiveSheet(res);
+    ss.moveActiveSheet(targetIndex);
+  }
+
   return { settingsSheet: set, resultsSheet: res };
 }
 
@@ -813,13 +848,15 @@ function readConfig(sh) {
   const out = [];
   for (let i = 1; i < vals.length; i++) {
     const r = vals[i];
-    if (!r[idx.id]) continue;
+    // Check for ID presence (don't skip yet)
+    const rawId = r[idx.id];
+    const hasMissingId = (!rawId || String(rawId).trim() === '');
+    const normalizedId = hasMissingId ? '' : normalizeId(rawId);
 
-    const measurementType = normalizeMeasurementType(String(r[idx.meas] || '').trim());
-    if (!measurementType) {
-      console.log(`Figyelem: Ismeretlen "Konverziómérés típusa" a(z) ${i + 1}. sorban – kihagyva.`);
-      continue;
-    }
+    const measurementTypeStr = String(r[idx.meas] || '').trim();
+    const measurementType = normalizeMeasurementType(measurementTypeStr);
+    // Don't skip if invalid, just flag
+    const hasMissingMeasurementType = (!measurementType);
 
     const rawDays = r[idx.days];
     const rawMinConv = r[idx.minC];
@@ -830,10 +867,13 @@ function readConfig(sh) {
     const valField = parseNonNegativeNumberField(rawMinVal);
 
     out.push({
-      id: normalizeId(r[idx.id]),
+      id: normalizedId,
       name: r[idx.name] || '',
-      measurementType: measurementType,
-      convName: String(r[idx.conv]).trim(),
+      measurementType: measurementType, // might be empty
+      hasMissingMeasurementType: hasMissingMeasurementType,
+      hasMissingId: hasMissingId,
+      convName: String(r[idx.conv] || '').trim(),
+      hasMissingConvName: (String(r[idx.conv] || '').trim() === ''),
 
       days: daysCheck.days,
 
@@ -845,10 +885,16 @@ function readConfig(sh) {
       hasMissingDays: daysCheck.hasMissing,
       hasInvalidDays: daysCheck.hasInvalid,
       hasInvalidThresholds: convField.invalid || valField.invalid,
+      hasMissingMinConv: convField.hasMissing,
+      hasMissingMinVal: valField.hasMissing,
 
       rawDays: rawDays,
       rawMinConv: rawMinConv,
-      rawMinVal: rawMinVal
+      rawDays: rawDays,
+      rawMinConv: rawMinConv,
+      rawMinVal: rawMinVal,
+
+      dataIndex: i - 1 // 0-based index a data range-ben (sor 2-től indul)
     });
   }
 
@@ -905,9 +951,12 @@ function validateDays(rawValue) {
  * - Negatív vagy nem szám → invalid=true
  */
 function parseNonNegativeNumberField(rawValue) {
-  const result = { value: 0, invalid: false };
+  const result = { value: 0, invalid: false, hasMissing: false };
 
-  if (rawValue === null || rawValue === '') return result;
+  if (rawValue === null || rawValue === '' || typeof rawValue === 'undefined') {
+    result.hasMissing = true;
+    return result;
+  }
 
   const n = toNum(rawValue, NaN);
   if (isNaN(n) || n < 0) {
@@ -1008,16 +1057,21 @@ function validateConfig() {
 /**
  * E-mail logika a kért tárgyakkal + trend státusz sor.
  */
-function writeStatusEmail(deviations, errors, everythingOk, trendUpdated) {
+function writeStatusEmail(deviations, errors, everythingOk, trendUpdated, incompleteCount) {
   if (!EMAIL_RECIPIENTS) {
     console.log('Nincs címzett beállítva, e-mail kihagyva.');
     return;
   }
 
   let subject = '';
-  let body = '';
+  let body = '<html><body style="font-family: sans-serif; color: #333;">';
 
-  // Limit e-mailben megjelenített sorok számát
+  // Opcionális figyelmeztetés hiányzó sorokról (vázlatok)
+  if (incompleteCount > 0) {
+    body += `<p style="color: #e65100; font-weight: bold; background-color: #fff3e0; padding: 10px; border: 1px solid #ffcc80; border-radius: 4px;">⚠️ Figyelem: ${incompleteCount} sor a Beállítások fülön hiányos vagy hibás volt. Ezeket piros háttérrel jelöltük a Beállítások fülön.</p>`;
+  }
+
+  // Limit e-mailben megjelenített sorok száma
   let deviationsOut = deviations;
   let errorsOut = errors;
   if (deviationsOut.length > MAX_ROWS_IN_EMAIL) {
@@ -1034,7 +1088,7 @@ function writeStatusEmail(deviations, errors, everythingOk, trendUpdated) {
     body = emailBodyTable([], SHEET_URL,
       'Csak így tovább! :-) Rendben vannak a konverziószámok és konverziós értékek a fiókjaidban.');
     if (trendUpdated) {
-      body += `<p><b>Trend riport frissítve:</b> Last ${TREND_DAYS} days (daily), fiókonként külön fülön.</p>`;
+      body += `<p><b>Trend riport frissítve:</b> Utolsó ${TREND_DAYS} nap (napi bontásban).</p>`;
     }
   } else {
     const haveDev = deviations.length > 0;
@@ -1055,7 +1109,7 @@ function writeStatusEmail(deviations, errors, everythingOk, trendUpdated) {
       body += emailBodyTable(deviationsOut, SHEET_URL, '');
     }
     if (trendUpdated) {
-      body += `<p><b>Trend riport frissítve:</b> Last ${TREND_DAYS} days (daily), fiókonként külön fülön.</p>`;
+      body += `<p><b>Trend riport frissítve:</b> Utolsó ${TREND_DAYS} nap (napi bontásban).</p>`;
     }
   }
 
@@ -1082,7 +1136,15 @@ function generateTrendReport(groupedByAccount, accountOrder, accountMap) {
     const acc = accountMap[id];
     if (!acc) continue;
 
-    const rules = (groupedByAccount[id] || []).filter(r => r.enabled !== false);
+    const rules = (groupedByAccount[id] || []).filter(function (r) {
+      // Csak engedélyezett és hibátlan (hiánytalan) sorokat dolgozunk fel a trend riportban
+      // Szigorú validáció: minden mező kötelező
+      if (r.enabled === false) return false;
+      if (r.hasMissingDays) return false;
+      if (r.hasMissingConvName && r.convName !== ACCOUNT_TOTAL_KEYWORD) return false;
+      if (r.hasMissingMinConv || r.hasMissingMinVal) return false;
+      return true;
+    });
     if (!rules.length) continue;
 
     AdsManagerApp.select(acc);
@@ -1101,7 +1163,7 @@ function generateTrendReport(groupedByAccount, accountOrder, accountMap) {
     const sheetName = `${TREND_SHEET_PREFIX}${safeName}`;
 
     let sh = ss.getSheetByName(sheetName);
-    if (!sh) sh = ss.insertSheet(sheetName);
+    if (!sh) sh = ss.insertSheet(sheetName, ss.getNumSheets());
 
     if (CLEAR_TREND_TABS_ON_RUN) {
       sh.clearContents();
@@ -1150,15 +1212,17 @@ function generateTrendReport(groupedByAccount, accountOrder, accountMap) {
       // Cím + minimumok
       sh.getRange(cursorRow, 1).setValue(blockTitle);
       sh.getRange(cursorRow + 1, 1).setValue(`Last ${TREND_DAYS} days`);
-      sh.getRange(cursorRow + 2, 1).setValue(`Min conversions: ${round2(minConv)}`);
-      sh.getRange(cursorRow + 3, 1).setValue(`Min conversion value: ${round2(minVal)}`);
+      sh.getRange(cursorRow + 2, 1).setValue('Min conversions:');
+      sh.getRange(cursorRow + 2, 2).setValue(round2(minConv));
+      sh.getRange(cursorRow + 3, 1).setValue('Min conversion value:');
+      sh.getRange(cursorRow + 3, 2).setValue(round2(minVal));
 
       // Ha van gap analízis, javaslatok megjelenítése
       let nextRow = cursorRow + 4;
       if (gapAnalysis && gapAnalysis.conservativeRecommendation) {
         sh.getRange(nextRow, 1).setValue('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         nextRow++;
-        sh.getRange(nextRow, 1).setValue('📊 Javaslatok alacsony volumen esetén (másolható értékek):');
+        sh.getRange(nextRow, 1).setValue('📊 Javaslatok alacsony volumen esetén:');
         nextRow++;
 
         // Táblázat fejléc
