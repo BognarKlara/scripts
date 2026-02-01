@@ -890,8 +890,6 @@ function readConfig(sh) {
 
       rawDays: rawDays,
       rawMinConv: rawMinConv,
-      rawDays: rawDays,
-      rawMinConv: rawMinConv,
       rawMinVal: rawMinVal,
 
       dataIndex: i - 1 // 0-based index a data range-ben (sor 2-től indul)
@@ -1154,6 +1152,7 @@ function generateTrendReport(groupedByAccount, accountOrder, accountMap) {
     // -- Módosítás: Fiók név használata ID helyett a fül nevében
     // Sheet név limit: 100 karakter, tiltott: * : / \ ? [ ]
     let safeName = acc.getName().replace(/[\*:\/\\\?\[\]]/g, ' ').trim();
+    if (!safeName) safeName = formatId(id);
     // Prefix + safeName hossza max 100 legyen
     // Prefix hossza: TREND_SHEET_PREFIX.length
     const maxLength = 100 - TREND_SHEET_PREFIX.length;
@@ -1323,7 +1322,8 @@ function buildEnabledResourcesByName(meta) {
  */
 function parseRecommendation(recString) {
   const result = { days: null, conv: null, value: null };
-
+  if (!recString) return result;
+  
   // Extract Napok
   const daysMatch = recString.match(/Napok=(\d+)/);
   if (daysMatch) result.days = parseInt(daysMatch[1], 10);
